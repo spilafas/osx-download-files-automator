@@ -1,0 +1,14 @@
+{
+  "watch_folders": [
+    "~/Downloads"
+  ],
+  "model": "claude-opus-5-5",
+  "effort": "low",
+  "poll_interval_seconds": 5,
+  "settle_seconds": 3,
+  "max_text_chars": 20000,
+  "max_file_mb": 25,
+  "only_new_files": true,
+  "dry_run": false,
+  "naming_instructions": "Use lowercase words separated by hyphens, at most 8 words. If the content clearly has a relevant date (invoice date, statement period, meeting date), start with it as YYYY-MM-DD. Include key entities such as company, person, or document type (e.g. 2026-10-31-acme-corp-invoice-1043)."
+}

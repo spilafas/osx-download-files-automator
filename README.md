@@ -1,0 +1,90 @@
+# AI File Renamer for macOS
+
+A background service that watches the folders you choose and, when a new file appears there, reads its content with the Claude API and renames it automatically. For example, `scan0012.pdf` becomes `2026-10-31-acme-corp-invoice-1043.pdf`.
+
+## How it works
+
+- Runs as a **launchd user agent**: it starts at login and restarts if it crashes.
+- Checks the watched folders every few seconds. It waits for a file to stop changing first, and skips partial downloads (`.crdownload`, `.download`, `.part`, …), hidden files and folders.
+- Sends the content to Claude (`claude-opus-5-5`, low effort, structured JSON output) and asks for a descriptive name. The extension is never changed, and name collisions get `-2`, `-3`, … added.
+- Files that were already in a folder when you installed are left alone. Each file is processed only once: it is tracked by inode, so a renamed file is not picked up again.
+- Your API key is stored in the **macOS Keychain**, not in a file.
+
+| File type | How the content is read |
+|---|---|
+| PDF | Sent to Claude as a document (text and scans) |
+| PNG, JPG, GIF, WEBP, HEIC, TIFF, BMP | Sent as an image (converted and resized with `sips` when needed) |
+| DOC, DOCX, RTF, ODT, webarchive | Converted to text with the built-in `textutil` |
+| Text and code files (txt, md, csv, json, html, py, …) | Read directly |
+| Pages, Numbers, Keynote, XLSX, PPTX, ZIP | Spotlight metadata, where available |
+
+## Install
+
+Requires Python 3 (the Xcode Command Line Tools one is enough) and an [Anthropic API key](https://console.anthropic.com/).
+
+```bash
+git clone https://github.com/spilafas/osx-download-files-automator.git
+cd osx-download-files-automator
+./install.sh                         # choose folders in a Finder dialog
+# or: ./install.sh ~/Downloads ~/Desktop/Scans
+```
+
+The installer creates a virtualenv, asks for your API key (input is hidden), writes the config and starts the service.
+
+### Folder permissions (Downloads, Desktop, Documents)
+
+macOS protects these folders from background processes. If the log shows `No permission to read …`, open **System Settings → Privacy & Security → Full Disk Access**, click **+**, press **⌘⇧G** and paste the Python path that `install.sh` printed. Then restart the service:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.github.spilafas.aifilerenamer
+```
+
+## Configuration
+
+Edit `~/Library/Application Support/AIFileRenamer/config.json`, then restart the service with the command above.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `watch_folders` | `["~/Downloads"]` | Folders to watch (top level only) |
+| `model` | `claude-opus-5-5` | Claude model |
+| `effort` | `low` | `low` / `medium` / `high`: higher is slower and costs more |
+| `naming_instructions` | lowercase-hyphen style, date first | How names should look. Write your own style here |
+| `only_new_files` | `true` | Leave files that existed before install alone |
+| `dry_run` | `false` | Log the suggested names without renaming |
+| `poll_interval_seconds` | `5` | How often to check the folders |
+| `settle_seconds` | `3` | How long a file must be unchanged before it is processed |
+| `max_text_chars` | `20000` | How much text to send per file |
+| `max_file_mb` | `25` | Skip files larger than this |
+
+To change watched folders, run `./install.sh` again with the new folders.
+
+## Use it manually
+
+```bash
+PY="$HOME/Library/Application Support/AIFileRenamer/venv/bin/python"
+"$PY" ai_renamer.py --file ~/Downloads/scan001.pdf --dry-run   # preview the name
+"$PY" ai_renamer.py --file ~/Downloads/scan001.pdf             # rename it
+```
+
+## Logs
+
+```bash
+tail -f ~/Library/Logs/AIFileRenamer.log
+```
+
+## Change the API key
+
+```bash
+RESET_KEY=1 ./install.sh
+```
+
+## Uninstall
+
+```bash
+./uninstall.sh            # stop and remove the service, keep the config
+./uninstall.sh --purge    # also remove the config, state, venv and Keychain key
+```
+
+## Privacy
+
+The content of every new file in a watched folder is sent to the Anthropic API. Don't watch folders that hold documents you don't want sent there.
