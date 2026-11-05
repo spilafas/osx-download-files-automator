@@ -315,14 +315,20 @@ def watch(cfg: dict, client: anthropic.Anthropic) -> None:
     attempts: dict[str, int] = {}
     sizes: dict[str, int] = {}
 
-    for folder in cfg["watch_folders"]:
+    denied: set[str] = set()
+
+    def ensure_baseline(folder: str) -> bool:
+        """Record files already present so they are never renamed. False if not readable yet."""
         fstate = state.setdefault(folder, {"seen": []})
-        if not fstate.get("initialized"):
-            if cfg["only_new_files"] and Path(folder).is_dir():
-                fstate["seen"] = [inode_key(p) for p in Path(folder).iterdir() if is_candidate(p)]
-                log.info("Baseline %s: %d existing files ignored", folder, len(fstate["seen"]))
-            fstate["initialized"] = True
-    save_state(state)
+        if fstate.get("initialized"):
+            return True
+        if cfg["only_new_files"]:
+            fstate["seen"] = [inode_key(p) for p in Path(folder).iterdir() if is_candidate(p)]
+            log.info("Baseline %s: %d existing files ignored", folder, len(fstate["seen"]))
+        fstate["initialized"] = True
+        save_state(state)
+        return True
+
     log.info("Watching: %s (model %s)", ", ".join(cfg["watch_folders"]), cfg["model"])
 
     while True:
@@ -330,12 +336,19 @@ def watch(cfg: dict, client: anthropic.Anthropic) -> None:
             root = Path(folder)
             if not root.is_dir():
                 continue
-            seen = set(state[folder]["seen"])
             try:
+                ensure_baseline(folder)
                 entries = list(root.iterdir())
             except PermissionError:
-                log.error("No permission to read %s (grant Full Disk Access, see README)", folder)
+                if folder not in denied:  # log once, keep waiting for access
+                    log.error("No permission to read %s. Grant Full Disk Access to Python "
+                              "(see README); waiting for access...", folder)
+                    denied.add(folder)
                 continue
+            if folder in denied:
+                log.info("Access to %s granted", folder)
+                denied.discard(folder)
+            seen = set(state[folder]["seen"])
             for p in entries:
                 try:
                     if not is_candidate(p):
