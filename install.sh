@@ -85,7 +85,11 @@ EOF
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
+# macOS checks the binary that actually runs. Framework builds of Python re-exec
+# into Resources/Python.app, so grant access to that app bundle when it exists.
 REAL_PY=$("$SUPPORT/venv/bin/python" -c 'import os,sys; print(os.path.realpath(getattr(sys,"_base_executable",sys.executable)))')
+APP_PY=$("$SUPPORT/venv/bin/python" -c 'import os,sys; print(os.path.join(sys.base_prefix,"Resources","Python.app"))')
+[ -d "$APP_PY" ] && REAL_PY="$APP_PY"
 cat <<EOF
 
 AI File Renamer is running.
