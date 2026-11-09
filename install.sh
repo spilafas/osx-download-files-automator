@@ -139,7 +139,13 @@ cat > "$PLIST" <<EOF
 EOF
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+# bootout returns before the old service is fully gone; wait so bootstrap doesn't fail.
+for _ in $(seq 1 20); do
+  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+  sleep 0.5
+done
+launchctl bootstrap "gui/$(id -u)" "$PLIST" || {
+  sleep 2; launchctl bootstrap "gui/$(id -u)" "$PLIST"; }
 
 echo
 echo "AI File Renamer is running."
