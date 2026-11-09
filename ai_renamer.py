@@ -16,6 +16,7 @@ import base64
 import contextlib
 import datetime as dt
 import fcntl
+import hashlib
 import io
 import json
 import logging
@@ -56,13 +57,15 @@ DEFAULT_CONFIG = {
     "only_new_files": True,
     "dry_run": False,
     "naming_instructions": (
-        "The name must be concise: 2 to 5 words, lowercase, separated by hyphens. "
-        "Keep only what identifies the file: the main subject plus the key "
-        "company, person or document type. Add a date (YYYY-MM or YYYY-MM-DD) only "
-        "when it is what tells similar files apart, such as invoices or statements. "
-        "Never use filler words such as document, file, final, copy, version, scan "
-        "or untitled. Examples: acme-invoice-2026-10, raitio-system-requirements, "
-        "oss-convertible-note-summary."
+        "Format: an optional date, then a short title in Title Case with spaces. "
+        "Start with the date as YYYY-MM when the content shows one that matters: "
+        "the invoice or statement date, contract date, meeting date or report period. "
+        "Use the date from the content, never today's date or a guess; if there is "
+        "no such date, leave it out. The title is concise, 2 to 5 words: the main "
+        "subject plus the key company, person or document type. Never use filler "
+        "words such as document, file, final, copy, version, scan or untitled. "
+        "Examples: 2026-10 Acme Invoice, 2026-07 Wadi Al Safa Tenancy Contract, "
+        "Raitio Technical Proposal."
     ),
 }
 
@@ -359,14 +362,41 @@ def sanitize(name: str, max_chars: int = 60) -> str:
     return name.strip(" .-")
 
 
+def same_content(a: Path, b: Path) -> bool:
+    if a.stat().st_size != b.stat().st_size:
+        return False
+    def digest(p: Path) -> str:
+        h = hashlib.sha256()
+        with p.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    return digest(a) == digest(b)
+
+
 def unique_target(path: Path, stem: str) -> Path:
+    """Pick a free name. An identical copy of a file that already has the name is
+    marked "(duplicate)"; a different file with the same name gets " 2", " 3"..."""
     ext = path.suffix
-    target = path.with_name(stem + ext)
-    n = 2
-    while target.exists() and target != path:
-        target = path.with_name(f"{stem}-{n}{ext}")
+    taken = []  # existing files with this name or a numbered variant
+    n = 1
+    while True:
+        cand = path.with_name(f"{stem}{ext}" if n == 1 else f"{stem} {n}{ext}")
+        if cand == path or not cand.exists():
+            free = cand
+            break
+        taken.append(cand)
         n += 1
-    return target
+    for other in taken:
+        if same_content(path, other):
+            dup = f"{other.stem} (duplicate)"
+            target = path.with_name(dup + ext)
+            k = 2
+            while target.exists() and target != path:
+                target = path.with_name(f"{other.stem} (duplicate {k}){ext}")
+                k += 1
+            return target
+    return free
 
 
 def process_file(client: anthropic.Anthropic, path: Path, cfg: dict, dry_run: bool,

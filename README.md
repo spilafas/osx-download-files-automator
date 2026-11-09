@@ -1,6 +1,6 @@
 # AI File Renamer for macOS
 
-A background service that watches the folders you choose and, when a new file appears there, reads its content with the Claude API and renames it automatically. Names are kept concise (2 to 5 words): for example, `scan0012.pdf` becomes `acme-invoice-2026-10.pdf`.
+A background service that watches the folders you choose and, when a new file appears there, reads its content with the Claude API and renames it automatically. Names start with the date from the content and a short Title Case title: for example, `scan0012.pdf` becomes `2026-10 Acme Invoice.pdf`. Identical copies are marked `(duplicate)`.
 
 ## How it works
 
@@ -50,7 +50,7 @@ Edit `~/Library/Application Support/AIFileRenamer/config.json`, then restart the
 | `watch_folders` | `["~/Downloads"]` | Folders to watch (top level only) |
 | `model` | `claude-opus-5-5` | Claude model |
 | `effort` | `low` | `low` / `medium` / `high`: higher is slower and costs more |
-| `naming_instructions` | concise, 2 to 5 words | How names should look. Write your own style here |
+| `naming_instructions` | date first (YYYY-MM), 2 to 5 word Title Case title | How names should look. Write your own style here |
 | `max_name_chars` | `60` | Hard cap on name length |
 | `max_pdf_pages` | `3` | PDF pages sent to Claude |
 | `workers` | `4` | Files processed in parallel by `--existing` |
