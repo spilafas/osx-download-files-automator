@@ -4,6 +4,12 @@
 #   ./install.sh ~/Downloads ~/Desktop # or pass folders directly
 set -euo pipefail
 
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Run this without sudo: ./install.sh"
+  echo "The service runs as your user, and macOS folder access can only be turned on in System Settings."
+  exit 1
+fi
+
 APP="AIFileRenamer"
 LABEL="com.github.spilafas.aifilerenamer"
 SUPPORT="$HOME/Library/Application Support/$APP"
