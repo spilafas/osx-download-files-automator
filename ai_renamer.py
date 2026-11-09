@@ -563,13 +563,20 @@ def undo(batch: str | None) -> None:
         batch = batches[-1]
     todo = [e for e in entries if e["batch"] == batch]
     restored = 0
+    keys = set()
     for e in reversed(todo):
         old, new = Path(e["old"]), Path(e["new"])
         if new.exists() and not old.exists():
             new.rename(old)
+            keys.add(inode_key(old))
             restored += 1
         else:
             log.warning("Cannot restore %s (moved, or the old name is taken)", new.name)
+    if keys:  # let --existing pick these files up again later
+        with state_txn() as st:
+            for fs in st.values():
+                if "renamed_existing" in fs:
+                    fs["renamed_existing"] = [k for k in fs["renamed_existing"] if k not in keys]
     log.info("Undo %s: restored %d of %d files", batch, restored, len(todo))
 
 
