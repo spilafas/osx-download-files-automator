@@ -33,11 +33,11 @@ The installer creates a virtualenv, asks for your API key (input is hidden), wri
 
 ### Folder permissions (Downloads, Desktop, Documents)
 
-macOS protects these folders from background processes. If the log shows `No permission to read …`, open **System Settings → Privacy & Security → Full Disk Access**, click **+**, press **⌘⇧G** and paste the Python path that `install.sh` printed. Then restart the service:
+macOS protects these folders from background processes, and only you can allow access, in System Settings. No script can turn it on, not even with `sudo`. To make it one switch, the service runs inside its own small app, `~/Applications/AI File Renamer.app`.
 
-```bash
-launchctl kickstart -k gui/$(id -u)/com.github.spilafas.aifilerenamer
-```
+If access is needed, `install.sh` opens **System Settings → Privacy & Security → Full Disk Access** and shows the app in Finder. Drag **AI File Renamer** into the list, turn it on, and the installer confirms once access works.
+
+Running `install.sh` again keeps the same app, so you don't have to allow access again. A new app is only built when `launcher.c` changes, and then macOS asks again.
 
 ## Configuration
 

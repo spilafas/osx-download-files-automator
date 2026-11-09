@@ -60,15 +60,54 @@ if ! security find-generic-password -s ai-file-renamer -a anthropic-api-key >/de
   echo "API key saved to your login Keychain."
 fi
 
-# 4. launchd agent ------------------------------------------------------------
+# 4. App wrapper ------------------------------------------------------------
+# macOS only lets you grant Full Disk Access in System Settings (not even root
+# can do it from a script). To make that a single switch, the service runs
+# inside its own small app, which shows up in the list as "AI File Renamer".
+APP_DIR="$HOME/Applications/AI File Renamer.app"
+APP_BIN="$APP_DIR/Contents/MacOS/ai-file-renamer"
+SRC_HASH=$(shasum -a 256 "$SRC_DIR/launcher.c" | cut -d' ' -f1)
+# Rebuild only when the launcher changes: a new build gets a new signature and
+# macOS would ask for access again.
+if [ "$(cat "$APP_DIR/Contents/Resources/launcher.sha256" 2>/dev/null)" != "$SRC_HASH" ]; then
+  echo "Building AI File Renamer.app..."
+  mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+  xcrun clang -O2 -o "$APP_BIN" "$SRC_DIR/launcher.c" || {
+    echo "Could not compile the launcher. Install the Command Line Tools: xcode-select --install"; exit 1; }
+  cat > "$APP_DIR/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>$LABEL</string>
+  <key>CFBundleName</key><string>AI File Renamer</string>
+  <key>CFBundleDisplayName</key><string>AI File Renamer</string>
+  <key>CFBundleExecutable</key><string>ai-file-renamer</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>LSBackgroundOnly</key><true/>
+  <key>NSDownloadsFolderUsageDescription</key><string>AI File Renamer renames new files in the folders you chose.</string>
+  <key>NSDesktopFolderUsageDescription</key><string>AI File Renamer renames new files in the folders you chose.</string>
+  <key>NSDocumentsFolderUsageDescription</key><string>AI File Renamer renames new files in the folders you chose.</string>
+</dict>
+</plist>
+EOF
+  echo "$SRC_HASH" > "$APP_DIR/Contents/Resources/launcher.sha256"
+  codesign --force --sign - --identifier "$LABEL" "$APP_DIR" >/dev/null 2>&1
+fi
+
+# 5. launchd agent ------------------------------------------------------------
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$LABEL</string>
+  <key>AssociatedBundleIdentifiers</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
+    <string>$APP_BIN</string>
     <string>$SUPPORT/venv/bin/python</string>
     <string>$SUPPORT/ai_renamer.py</string>
   </array>
@@ -85,20 +124,47 @@ EOF
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
-# macOS checks the binary that actually runs. Framework builds of Python re-exec
-# into Resources/Python.app, so grant access to that app bundle when it exists.
-REAL_PY=$("$SUPPORT/venv/bin/python" -c 'import os,sys; print(os.path.realpath(getattr(sys,"_base_executable",sys.executable)))')
-APP_PY=$("$SUPPORT/venv/bin/python" -c 'import os,sys; print(os.path.join(sys.base_prefix,"Resources","Python.app"))')
-[ -d "$APP_PY" ] && REAL_PY="$APP_PY"
+echo
+echo "AI File Renamer is running."
+echo "  Config: $SUPPORT/config.json"
+echo "  Log:    $LOG"
+
+# 6. Folder access ------------------------------------------------------------
+# Give the service a moment to start, then see whether it can read the folders.
+LOG_START=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+sleep 4
+new_log() { tail -n +"$((LOG_START + 1))" "$LOG" 2>/dev/null; }
+if ! new_log | grep -q "No permission to read"; then
+  echo "Folder access OK. New files will be renamed automatically."
+  exit 0
+fi
+
 cat <<EOF
 
-AI File Renamer is running.
-  Config: $SUPPORT/config.json
-  Log:    $LOG   (tail -f "$LOG")
+One step left: macOS needs your OK to let the service read the folder.
+Opening System Settings > Privacy & Security > Full Disk Access and showing
+"AI File Renamer" in Finder:
+  1. Drag "AI File Renamer" from the Finder window into the Full Disk Access list
+     (or click +, then pick it from your Applications folder in your home folder).
+  2. Turn its switch on.
 
-If a watched folder is Downloads, Desktop or Documents, macOS may block the
-background service. Grant access in System Settings > Privacy & Security >
-Full Disk Access: click +, press Cmd+Shift+G and paste:
-  $REAL_PY
-Then restart the service:  launchctl kickstart -k gui/$(id -u)/$LABEL
+Waiting for access (press Ctrl+C to stop waiting; the service keeps running)...
 EOF
+open "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles" 2>/dev/null \
+  || open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+open -R "$APP_DIR"
+
+for i in $(seq 1 180); do
+  sleep 2
+  # Some macOS versions only apply a new permission after a restart.
+  [ $((i % 10)) -eq 0 ] && launchctl kickstart -k "gui/$(id -u)/$LABEL" 2>/dev/null
+  if new_log | grep -qE "Access to .* granted|Baseline "; then
+    echo
+    echo "Access granted. AI File Renamer is now watching your folders."
+    new_log | grep -E "Baseline " | sed 's/^/  /'
+    exit 0
+  fi
+done
+echo
+echo "Still no access after 6 minutes. Once you turn it on, the service picks it"
+echo "up on its own. Check the log with: tail -f \"$LOG\""

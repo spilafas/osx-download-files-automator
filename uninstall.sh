@@ -6,6 +6,7 @@ SUPPORT="$HOME/Library/Application Support/AIFileRenamer"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null
 rm -f "$HOME/Library/LaunchAgents/$LABEL.plist"
+rm -rf "$HOME/Applications/AI File Renamer.app"
 echo "Service stopped and removed."
 
 if [ "${1:-}" = "--purge" ]; then
