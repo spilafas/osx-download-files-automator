@@ -1,6 +1,6 @@
 # AI File Renamer for macOS
 
-A background service that watches the folders you choose and, when a new file appears there, reads its content with the Claude API and renames it automatically. Names start with the date from the content and a short Title Case title: for example, `scan0012.pdf` becomes `2026-10 Acme Invoice.pdf`. Identical copies are marked `(duplicate)`.
+A background service that watches the folders you choose and, when a new file appears there, reads its content with the Claude API and renames it automatically. Names start with the date from the content and a short Title Case title: for example, `scan0012.pdf` becomes `2026-10 Acme Invoice.pdf`. When the content shows no date, the name starts with the month the file was downloaded instead, so every name starts with a date. Identical copies are marked `(duplicate)`.
 
 ## How it works
 
@@ -59,6 +59,7 @@ Edit `~/Library/Application Support/AIFileRenamer/config.json`, then restart the
 | `max_name_chars` | `60` | Hard cap on name length |
 | `max_pdf_pages` | `3` | PDF pages sent to Claude |
 | `workers` | `4` | Files processed in parallel by `--existing` |
+| `date_fallback` | `download` | Date to use when the content has none: `download`, or `none` to leave the date out |
 | `rename_folders` | `true` | Rename folders as well as files |
 | `keep_folder_names` | `Chrome`, `Telegram Lite`, … | Folder names never to rename |
 | `only_new_files` | `true` | Leave files that existed before install alone |
@@ -86,6 +87,7 @@ New files are renamed automatically. To also rename the files that were in the f
 cd "$HOME/Library/Application Support/AIFileRenamer"
 venv/bin/python ai_renamer.py --existing --dry-run --limit 20   # preview 20 names
 venv/bin/python ai_renamer.py --existing                         # rename them all
+venv/bin/python ai_renamer.py --add-dates                        # date names that have none (no API calls)
 venv/bin/python ai_renamer.py --undo                             # put the old names back
 ```
 

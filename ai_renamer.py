@@ -57,6 +57,8 @@ DEFAULT_CONFIG = {
     "only_new_files": True,
     "dry_run": False,
     "rename_folders": True,
+    # When the content shows no date, start the name with the download date instead.
+    "date_fallback": "download",
     # Folders that apps save into; renaming them only makes the app create them again.
     "keep_folder_names": ["Chrome", "Telegram Desktop", "Telegram Lite", "WhatsApp", "Zoom",
                           "Microsoft Teams", "Slack", "Safari"],
@@ -526,6 +528,27 @@ def unique_target(path: Path, stem: str, ext: str | None = None) -> Path:
     return free
 
 
+DATE_PREFIX = re.compile(r"^(19|20)\d\d(-(0[1-9]|1[0-2]))?( |$)")
+
+
+def download_date(path: Path) -> str:
+    """YYYY-MM of when the item arrived in the folder (Spotlight's "Date Added"),
+    or of when it was created if Spotlight doesn't know."""
+    out = run_text_cmd(["mdls", "-raw", "-name", "kMDItemDateAdded", str(path)]) or ""
+    try:
+        when = dt.datetime.strptime(out.strip(), "%Y-%m-%d %H:%M:%S %z").astimezone()
+    except ValueError:
+        st = path.stat()
+        when = dt.datetime.fromtimestamp(getattr(st, "st_birthtime", st.st_mtime))
+    return when.strftime("%Y-%m")
+
+
+def with_date(stem: str, path: Path, cfg: dict) -> str:
+    if cfg.get("date_fallback") != "download" or DATE_PREFIX.match(stem):
+        return stem
+    return f"{download_date(path)} {stem}"
+
+
 def process_file(client: anthropic.Anthropic, path: Path, cfg: dict, dry_run: bool,
                  batch: str = "manual") -> Path | None:
     blocks = file_to_content_blocks(path, cfg)
@@ -546,6 +569,8 @@ def process_file(client: anthropic.Anthropic, path: Path, cfg: dict, dry_run: bo
         if e and raw.lower().endswith(e.lower()):
             raw = raw[: -len(e)]
     stem = sanitize(raw, cfg["max_name_chars"])
+    if stem:
+        stem = with_date(stem, path, cfg)
     if not stem or (stem == old_stem and ext == old_ext):
         log.info("Keeping name: %s", path.name)
         return path
@@ -756,15 +781,43 @@ def rename_existing(cfg: dict, client: anthropic.Anthropic, dry_run: bool, limit
         log.info("To undo this run: ai_renamer.py --undo %s", batch)
 
 
+def add_dates(cfg: dict, dry_run: bool) -> None:
+    batch = "dates-" + dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    n = 0
+    for folder in cfg["watch_folders"]:
+        root = Path(folder)
+        if not root.is_dir():
+            continue
+        for p in sorted(root.iterdir(), key=lambda x: x.name.lower()):
+            if not is_candidate(p, cfg["rename_folders"]):
+                continue
+            is_dir = p.is_dir()
+            stem, ext = (p.name, "") if is_dir else (p.stem, p.suffix)
+            if DATE_PREFIX.match(stem):
+                continue
+            with _lock:
+                target = unique_target(p, f"{download_date(p)} {stem}", ext)
+                if dry_run:
+                    log.info("[dry-run] %s -> %s", p.name, target.name)
+                else:
+                    p.rename(target)
+                    record_rename(batch, p, target)
+                    log.info("Renamed %s -> %s", p.name, target.name)
+            n += 1
+    log.info("Done: %d names %s", n, "would get a date" if dry_run else "got a date")
+    if n and not dry_run:
+        log.info("To undo this run: ai_renamer.py --undo %s", batch)
+
+
 def undo(batch: str | None) -> None:
     if not RENAME_LOG.exists():
         log.info("Nothing to undo")
         return
     entries = [json.loads(line) for line in RENAME_LOG.read_text().splitlines() if line.strip()]
     if batch is None:
-        batches = [e["batch"] for e in entries if e["batch"].startswith("existing-")]
+        batches = [e["batch"] for e in entries if e["batch"].startswith(("existing-", "dates-"))]
         if not batches:
-            log.info("No --existing run to undo")
+            log.info("No --existing or --add-dates run to undo")
             return
         batch = batches[-1]
     todo = [e for e in entries if e["batch"] == batch]
@@ -778,7 +831,7 @@ def undo(batch: str | None) -> None:
             restored += 1
         else:
             log.warning("Cannot restore %s (moved, or the old name is taken)", new.name)
-    if keys:  # let --existing pick these files up again later
+    if keys and batch.startswith("existing-"):  # let --existing pick these up again
         with state_txn() as st:
             for fs in st.values():
                 if "renamed_existing" in fs:
@@ -790,6 +843,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--file", help="process a single file and exit")
     ap.add_argument("--existing", action="store_true", help="rename files already in the watched folders")
+    ap.add_argument("--add-dates", action="store_true",
+                    help="put the download date in front of names that have no date (no API calls)")
     ap.add_argument("--limit", type=int, help="with --existing: only this many files")
     ap.add_argument("--undo", nargs="?", const="", metavar="BATCH",
                     help="undo a --existing run (default: the latest)")
@@ -802,6 +857,9 @@ def main() -> int:
         undo(args.undo or None)
         return 0
     cfg = load_config()
+    if args.add_dates:
+        add_dates(cfg, args.dry_run)
+        return 0
     key = get_api_key()
     if not key:
         log.error("No API key. Set ANTHROPIC_API_KEY or run install.sh to store it in the Keychain.")
