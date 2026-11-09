@@ -6,7 +6,7 @@ A background service that watches the folders you choose and, when a new file ap
 
 - Runs as a **launchd user agent**: it starts at login and restarts if it crashes.
 - Checks the watched folders every few seconds. It waits for a file to stop changing first, and skips partial downloads (`.crdownload`, `.download`, `.part`, …), hidden files and folders.
-- Sends the content to Claude (`claude-opus-5-5`, low effort, structured JSON output) and asks for a descriptive name. The extension is never changed, and name collisions get `-2`, `-3`, … added.
+- Sends the content to Claude (`claude-opus-5-5`, low effort, structured JSON output) and asks for a descriptive name. The extension is never changed, and a different file with the same name gets ` 2`, ` 3`, … added.
 - Files that were already in a folder when you installed are left alone. Each file is processed only once: it is tracked by inode, so a renamed file is not picked up again.
 - Your API key is stored in the **macOS Keychain**, not in a file.
 
@@ -19,6 +19,9 @@ A background service that watches the folders you choose and, when a new file ap
 | XLSX, PPTX | Text extracted from the file |
 | ZIP | The list of files inside |
 | Pages, Numbers, Keynote, DMG | Spotlight metadata, where available |
+| Videos, audio, large files, password-protected PDFs, anything else | File details (kind, length, download source, dates) plus a Quick Look preview frame |
+
+A file whose extension is wrong or missing but that is really a PDF or image is read as one and gets the right extension.
 
 ## Install
 

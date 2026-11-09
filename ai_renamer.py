@@ -165,9 +165,51 @@ def record_rename(batch: str, old: Path, new: Path) -> None:
 
 # ----------------------------------------------------------------- content reading
 
-def file_to_content_blocks(path: Path, cfg: dict) -> list[dict] | None:
-    """Turn a file into Claude content blocks, or None if unsupported."""
+KNOWN_EXTS = None  # filled lazily below
+
+
+def sniff_ext(path: Path) -> str | None:
+    """Real extension from the first bytes, for files with a missing or wrong extension."""
+    try:
+        with path.open("rb") as f:
+            head = f.read(16)
+    except OSError:
+        return None
+    if head.startswith(b"%PDF"):
+        return ".pdf"
+    if head.startswith(b"\x89PNG"):
+        return ".png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    return None
+
+
+def real_ext(path: Path) -> str:
+    """The extension to read the file as, and to give it when renaming."""
+    global KNOWN_EXTS
+    if KNOWN_EXTS is None:
+        KNOWN_EXTS = (TEXT_EXTS | TEXTUTIL_EXTS | ARCHIVE_EXTS | set(IMAGE_TYPES) | SIPS_IMAGE_EXTS
+                      | set(OFFICE_XML) | {".pdf", ".pages", ".numbers", ".key", ".dmg"})
     ext = path.suffix.lower()
+    if ext in KNOWN_EXTS:
+        return ext
+    return sniff_ext(path) or ext
+
+
+def file_to_content_blocks(path: Path, cfg: dict) -> list[dict] | None:
+    """Turn a file into Claude content blocks; falls back to details and a preview."""
+    blocks = read_content(path, cfg)
+    if blocks is None:
+        if path.stat().st_size == 0:
+            log.info("Skipping %s: empty file", path.name)
+            return None
+        blocks = fallback_blocks(path)
+        log.info("Naming %s from its details and preview (content not readable)", path.name)
+    return blocks
+
+
+def read_content(path: Path, cfg: dict) -> list[dict] | None:
+    ext = real_ext(path)
     size = path.stat().st_size
     if size == 0:
         return None
@@ -182,7 +224,7 @@ def file_to_content_blocks(path: Path, cfg: dict) -> list[dict] | None:
         text = office_xml_text(path, OFFICE_XML[ext])
     else:
         if size > cfg["max_file_mb"] * 1024 * 1024:
-            log.info("Skipping %s: larger than %s MB", path.name, cfg["max_file_mb"])
+            log.debug("%s is larger than %s MB", path.name, cfg["max_file_mb"])
             return None
         if ext in IMAGE_TYPES or ext in SIPS_IMAGE_EXTS:
             return image_blocks(path, ext)
@@ -195,7 +237,7 @@ def file_to_content_blocks(path: Path, cfg: dict) -> list[dict] | None:
             text = spotlight_text(path)
 
     if not text or not text.strip():
-        log.info("Skipping %s: no readable content", path.name)
+        log.debug("%s: no readable content", path.name)
         return None
     text = text[: cfg["max_text_chars"]]
     return [{"type": "text", "text": f"<file_content>\n{text}\n</file_content>"}]
@@ -208,7 +250,13 @@ def pdf_blocks(path: Path, cfg: dict) -> list[dict] | None:
         from pypdf import PdfReader, PdfWriter
         reader = PdfReader(str(path))
         if reader.is_encrypted:
-            reader.decrypt("")
+            try:
+                ok = reader.decrypt("")
+            except Exception:
+                ok = 0
+            if not ok:
+                log.info("%s is password-protected", path.name)
+                return None
         if len(reader.pages) > cfg["max_pdf_pages"]:
             writer = PdfWriter()
             for page in reader.pages[: cfg["max_pdf_pages"]]:
@@ -303,6 +351,47 @@ def spotlight_text(path: Path) -> str | None:
     return out
 
 
+MD_FIELDS = ["kMDItemKind", "kMDItemTitle", "kMDItemAuthors", "kMDItemWhereFroms",
+             "kMDItemContentCreationDate", "kMDItemDurationSeconds", "kMDItemPixelWidth",
+             "kMDItemPixelHeight", "kMDItemCodecs", "kMDItemVersion", "kMDItemCreator",
+             "kMDItemEncodingApplications", "kMDItemNumberOfPages", "kMDItemDescription"]
+
+
+def fallback_blocks(path: Path) -> list[dict] | None:
+    """For videos, audio, installers, locked PDFs and other files whose content
+    can't be sent: describe the file and add a Quick Look preview image."""
+    cmd = ["mdls"]
+    for f in MD_FIELDS:
+        cmd += ["-name", f]
+    meta = run_text_cmd(cmd + [str(path)]) or ""
+    meta = "\n".join(l for l in meta.splitlines() if "(null)" not in l)
+    meta = re.sub(r"([?&])[^\s\"]{60,}", r"\1...", meta)  # trim long download URLs
+    size_mb = path.stat().st_size / 1024 / 1024
+    text = (f"The content of this file could not be read directly. Details:\n"
+            f"Size: {size_mb:.1f} MB\n{meta}\n"
+            "Name it from these details and the preview image, if there is one. "
+            "If they don't show what the file is, return the current name unchanged.")
+    blocks = []
+    if path.suffix.lower() in {".dmg", ".iso", ".pkg"}:  # Quick Look would mount these
+        return [{"type": "text", "text": f"<file_details>\n{text}\n</file_details>"}]
+    tmp = tempfile.mkdtemp(prefix="airenamer-")
+    try:
+        subprocess.run(["qlmanage", "-t", "-s", "1024", "-o", tmp, str(path)],
+                       capture_output=True, timeout=60)
+        thumbs = list(Path(tmp).glob("*.png"))
+        if thumbs and thumbs[0].stat().st_size > 2000:  # skip generic icons
+            blocks.append({"type": "image", "source": {
+                "type": "base64", "media_type": "image/png",
+                "data": base64.standard_b64encode(thumbs[0].read_bytes()).decode()}})
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    finally:
+        for f in Path(tmp).iterdir():
+            f.unlink()
+        os.rmdir(tmp)
+    return blocks + [{"type": "text", "text": f"<file_details>\n{text}\n</file_details>"}]
+
+
 # ------------------------------------------------------------------- Claude naming
 
 NAME_SCHEMA = {
@@ -374,10 +463,10 @@ def same_content(a: Path, b: Path) -> bool:
     return digest(a) == digest(b)
 
 
-def unique_target(path: Path, stem: str) -> Path:
+def unique_target(path: Path, stem: str, ext: str | None = None) -> Path:
     """Pick a free name. An identical copy of a file that already has the name is
     marked "(duplicate)"; a different file with the same name gets " 2", " 3"..."""
-    ext = path.suffix
+    ext = path.suffix if ext is None else ext
     taken = []  # existing files with this name or a numbered variant
     n = 1
     while True:
@@ -407,14 +496,19 @@ def process_file(client: anthropic.Anthropic, path: Path, cfg: dict, dry_run: bo
     raw = suggest_name(client, path, blocks, cfg)
     if not raw:
         return None
-    if path.suffix and raw.lower().endswith(path.suffix.lower()):
-        raw = raw[: -len(path.suffix)]
+    ext = path.suffix
+    sniffed = real_ext(path)
+    if sniffed != ext.lower() and sniffed in {".pdf", ".png", ".jpg"}:
+        ext = sniffed
+    for e in {path.suffix, ext}:
+        if e and raw.lower().endswith(e.lower()):
+            raw = raw[: -len(e)]
     stem = sanitize(raw, cfg["max_name_chars"])
-    if not stem or stem == path.stem:
+    if not stem or (stem == path.stem and ext == path.suffix):
         log.info("Keeping name: %s", path.name)
         return path
     with _lock:  # pick a free name and rename atomically w.r.t. other workers
-        target = unique_target(path, stem)
+        target = unique_target(path, stem, ext)
         if dry_run:
             log.info("[dry-run] %s -> %s", path.name, target.name)
             return target
@@ -561,7 +655,7 @@ def rename_existing(cfg: dict, client: anthropic.Anthropic, dry_run: bool, limit
         except Exception as e:  # one bad file must not stop the whole run
             log.error("Failed on %s: %s: %s", p.name, type(e).__name__, e)
             return "error"
-        if not dry_run:
+        if not dry_run and result != "skipped":
             with state_txn() as st:  # never pick this file up again, here or in the watcher
                 fs = st.setdefault(folder, {"seen": [], "initialized": True})
                 fs.setdefault("renamed_existing", []).append(key)
