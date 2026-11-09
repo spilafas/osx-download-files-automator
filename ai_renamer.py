@@ -528,8 +528,8 @@ def rename_existing(cfg: dict, client: anthropic.Anthropic, dry_run: bool, limit
             result = "skipped" if new is None else ("kept" if new == p else "renamed")
         except anthropic.AuthenticationError:
             raise
-        except (anthropic.APIError, OSError) as e:
-            log.error("Failed on %s: %s", p.name, e)
+        except Exception as e:  # one bad file must not stop the whole run
+            log.error("Failed on %s: %s: %s", p.name, type(e).__name__, e)
             return "error"
         if not dry_run:
             with state_txn() as st:  # never pick this file up again, here or in the watcher
