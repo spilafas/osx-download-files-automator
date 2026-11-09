@@ -6,9 +6,12 @@
   "effort": "low",
   "poll_interval_seconds": 5,
   "settle_seconds": 3,
-  "max_text_chars": 20000,
+  "max_text_chars": 8000,
+  "max_pdf_pages": 3,
   "max_file_mb": 25,
+  "max_name_chars": 60,
+  "workers": 4,
   "only_new_files": true,
   "dry_run": false,
-  "naming_instructions": "Use lowercase words separated by hyphens, at most 8 words. If the content clearly has a relevant date (invoice date, statement period, meeting date), start with it as YYYY-MM-DD. Include key entities such as company, person, or document type (e.g. 2026-10-31-acme-corp-invoice-1043)."
+  "naming_instructions": "The name must be concise: 2 to 5 words, lowercase, separated by hyphens. Keep only what identifies the file: the main subject plus the key company, person or document type. Add a date (YYYY-MM or YYYY-MM-DD) only when it is what tells similar files apart, such as invoices or statements. Never use filler words such as document, file, final, copy, version, scan or untitled. Examples: acme-invoice-2026-10, raitio-system-requirements, oss-convertible-note-summary."
 }

@@ -62,6 +62,17 @@ if ! security find-generic-password -s ai-file-renamer -a anthropic-api-key >/de
   if [ -z "$KEY" ]; then
     read -r -s -p "Paste your Anthropic API key (input hidden): " KEY; echo
   fi
+  KEY="$(printf '%s' "$KEY" | tr -d '[:space:]\"'"'"'')"
+  case "$KEY" in
+    sk-ant-*) ;;
+    *) echo "That doesn't look like an Anthropic API key (they start with sk-ant-). Nothing saved."; exit 1 ;;
+  esac
+  # The key goes to curl on stdin, so it never shows up in the process list.
+  CODE=$(printf 'x-api-key: %s\n' "$KEY" | curl -s -o /dev/null -w '%{http_code}' \
+    -H @- -H "anthropic-version: 2023-06-01" https://api.anthropic.com/v1/models || echo 000)
+  if [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; then
+    echo "The API rejected this key (HTTP $CODE). Nothing saved."; exit 1
+  fi
   security add-generic-password -U -s ai-file-renamer -a anthropic-api-key -w "$KEY"
   echo "API key saved to your login Keychain."
 fi

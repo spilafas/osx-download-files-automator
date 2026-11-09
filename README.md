@@ -1,6 +1,6 @@
 # AI File Renamer for macOS
 
-A background service that watches the folders you choose and, when a new file appears there, reads its content with the Claude API and renames it automatically. For example, `scan0012.pdf` becomes `2026-10-31-acme-corp-invoice-1043.pdf`.
+A background service that watches the folders you choose and, when a new file appears there, reads its content with the Claude API and renames it automatically. Names are kept concise (2 to 5 words): for example, `scan0012.pdf` becomes `acme-invoice-2026-10.pdf`.
 
 ## How it works
 
@@ -12,11 +12,13 @@ A background service that watches the folders you choose and, when a new file ap
 
 | File type | How the content is read |
 |---|---|
-| PDF | Sent to Claude as a document (text and scans) |
+| PDF | First 3 pages sent to Claude as a document (text and scans) |
 | PNG, JPG, GIF, WEBP, HEIC, TIFF, BMP | Sent as an image (converted and resized with `sips` when needed) |
 | DOC, DOCX, RTF, ODT, webarchive | Converted to text with the built-in `textutil` |
 | Text and code files (txt, md, csv, json, html, py, …) | Read directly |
-| Pages, Numbers, Keynote, XLSX, PPTX, ZIP | Spotlight metadata, where available |
+| XLSX, PPTX | Text extracted from the file |
+| ZIP | The list of files inside |
+| Pages, Numbers, Keynote, DMG | Spotlight metadata, where available |
 
 ## Install
 
@@ -48,7 +50,10 @@ Edit `~/Library/Application Support/AIFileRenamer/config.json`, then restart the
 | `watch_folders` | `["~/Downloads"]` | Folders to watch (top level only) |
 | `model` | `claude-opus-5-5` | Claude model |
 | `effort` | `low` | `low` / `medium` / `high`: higher is slower and costs more |
-| `naming_instructions` | lowercase-hyphen style, date first | How names should look. Write your own style here |
+| `naming_instructions` | concise, 2 to 5 words | How names should look. Write your own style here |
+| `max_name_chars` | `60` | Hard cap on name length |
+| `max_pdf_pages` | `3` | PDF pages sent to Claude |
+| `workers` | `4` | Files processed in parallel by `--existing` |
 | `only_new_files` | `true` | Leave files that existed before install alone |
 | `dry_run` | `false` | Log the suggested names without renaming |
 | `poll_interval_seconds` | `5` | How often to check the folders |
@@ -66,6 +71,19 @@ PY="$HOME/Library/Application Support/AIFileRenamer/venv/bin/python"
 "$PY" ai_renamer.py --file ~/Downloads/scan001.pdf             # rename it
 ```
 
+## Rename files that were already there
+
+New files are renamed automatically. To also rename the files that were in the folders before you installed:
+
+```bash
+cd "$HOME/Library/Application Support/AIFileRenamer"
+venv/bin/python ai_renamer.py --existing --dry-run --limit 20   # preview 20 names
+venv/bin/python ai_renamer.py --existing                         # rename them all
+venv/bin/python ai_renamer.py --undo                             # put the old names back
+```
+
+Every rename is recorded in `renames.jsonl` in that folder, so `--undo` can restore a whole run. Files that already have a good name are left as they are, and a file is never processed twice.
+
 ## Logs
 
 ```bash
@@ -77,6 +95,8 @@ tail -f ~/Library/Logs/AIFileRenamer.log
 ```bash
 RESET_KEY=1 ./install.sh
 ```
+
+The installer checks the key with the API before saving it.
 
 ## Uninstall
 
