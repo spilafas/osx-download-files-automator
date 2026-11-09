@@ -56,6 +56,10 @@ DEFAULT_CONFIG = {
     "workers": 4,
     "only_new_files": True,
     "dry_run": False,
+    "rename_folders": True,
+    # Folders that apps save into; renaming them only makes the app create them again.
+    "keep_folder_names": ["Chrome", "Telegram Desktop", "Telegram Lite", "WhatsApp", "Zoom",
+                          "Microsoft Teams", "Slack", "Safari"],
     "naming_instructions": (
         "Format: an optional date, then a short title in Title Case with spaces. "
         "Start with the date as YYYY-MM when the content shows one that matters: "
@@ -111,6 +115,8 @@ def load_config() -> dict:
     if CONFIG_PATH.exists():
         cfg.update(json.loads(CONFIG_PATH.read_text()))
     cfg["watch_folders"] = [str(Path(p).expanduser()) for p in cfg["watch_folders"]]
+    KEEP_FOLDER_NAMES.clear()
+    KEEP_FOLDER_NAMES.update(cfg["keep_folder_names"])
     return cfg
 
 
@@ -196,8 +202,39 @@ def real_ext(path: Path) -> str:
     return sniff_ext(path) or ext
 
 
+def folder_blocks(path: Path, cfg: dict) -> list[dict] | None:
+    """A folder is described by what is in it, plus the start of any readme or notes."""
+    lines, notes = [], []
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(path):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".")
+                             and d not in {"node_modules", "__pycache__", "venv", ".venv"})
+        rel = Path(dirpath).relative_to(path)
+        for name in sorted(filenames):
+            if name.startswith("."):
+                continue
+            total += 1
+            f = Path(dirpath) / name
+            if len(lines) < 300:
+                lines.append(str(rel / name))
+            if (len(notes) < 3 and f.suffix.lower() in {".md", ".txt"} and rel.parts[:1] == ()
+                    and f.stat().st_size < 1_000_000):
+                notes.append(f"--- {name} ---\n" + f.read_text(errors="replace")[:2000])
+    if total == 0:
+        log.info("Skipping %s: empty folder", path.name)
+        return None
+    text = (f"This is a FOLDER, not a file. Name the folder after what it holds. "
+            f"It contains {total} files:\n" + "\n".join(lines))
+    if notes:
+        text += "\n\n" + "\n".join(notes)
+    text = text[: cfg["max_text_chars"]]
+    return [{"type": "text", "text": f"<folder_content>\n{text}\n</folder_content>"}]
+
+
 def file_to_content_blocks(path: Path, cfg: dict) -> list[dict] | None:
     """Turn a file into Claude content blocks; falls back to details and a preview."""
+    if path.is_dir():
+        return folder_blocks(path, cfg)
     blocks = read_content(path, cfg)
     if blocks is None:
         if path.stat().st_size == 0:
@@ -410,7 +447,8 @@ NAME_SCHEMA = {
 def suggest_name(client: anthropic.Anthropic, path: Path, blocks: list[dict], cfg: dict) -> str | None:
     instructions = (
         "You name files based on their content so they are easy to find later. "
-        f"The current file name is \"{path.name}\" (it may be meaningless). "
+        f"The current {'folder' if path.is_dir() else 'file'} name is \"{path.name}\" "
+        "(it may be meaningless). "
         f"Today's date is {dt.date.today().isoformat()}. "
         f"Naming rules: {cfg['naming_instructions']} "
         "If the current name already follows these rules and describes the content, "
@@ -466,7 +504,7 @@ def same_content(a: Path, b: Path) -> bool:
 def unique_target(path: Path, stem: str, ext: str | None = None) -> Path:
     """Pick a free name. An identical copy of a file that already has the name is
     marked "(duplicate)"; a different file with the same name gets " 2", " 3"..."""
-    ext = path.suffix if ext is None else ext
+    ext = (path.suffix if path.is_file() else "") if ext is None else ext
     taken = []  # existing files with this name or a numbered variant
     n = 1
     while True:
@@ -477,7 +515,7 @@ def unique_target(path: Path, stem: str, ext: str | None = None) -> Path:
         taken.append(cand)
         n += 1
     for other in taken:
-        if same_content(path, other):
+        if path.is_file() and other.is_file() and same_content(path, other):
             dup = f"{other.stem} (duplicate)"
             target = path.with_name(dup + ext)
             k = 2
@@ -496,15 +534,19 @@ def process_file(client: anthropic.Anthropic, path: Path, cfg: dict, dry_run: bo
     raw = suggest_name(client, path, blocks, cfg)
     if not raw:
         return None
-    ext = path.suffix
-    sniffed = real_ext(path)
-    if sniffed != ext.lower() and sniffed in {".pdf", ".png", ".jpg"}:
-        ext = sniffed
-    for e in {path.suffix, ext}:
+    is_dir = path.is_dir()
+    old_ext = "" if is_dir else path.suffix
+    old_stem = path.name if is_dir else path.stem
+    ext = old_ext
+    if not is_dir:
+        sniffed = real_ext(path)
+        if sniffed != ext.lower() and sniffed in {".pdf", ".png", ".jpg"}:
+            ext = sniffed
+    for e in {old_ext, ext}:
         if e and raw.lower().endswith(e.lower()):
             raw = raw[: -len(e)]
     stem = sanitize(raw, cfg["max_name_chars"])
-    if not stem or (stem == path.stem and ext == path.suffix):
+    if not stem or (stem == old_stem and ext == old_ext):
         log.info("Keeping name: %s", path.name)
         return path
     with _lock:  # pick a free name and rename atomically w.r.t. other workers
@@ -520,13 +562,42 @@ def process_file(client: anthropic.Anthropic, path: Path, cfg: dict, dry_run: bo
 
 # ------------------------------------------------------------------------ watching
 
-def is_candidate(p: Path) -> bool:
+KEEP_FOLDER_NAMES: set = set(DEFAULT_CONFIG["keep_folder_names"])
+
+
+def is_candidate(p: Path, folders: bool = False) -> bool:
     name = p.name
     if name.startswith(".") or name.startswith("~$") or name.endswith(PARTIAL_SUFFIXES):
         return False
     if name.endswith(".icloud"):
         return False
-    return p.is_file() and not p.is_symlink()
+    if p.is_symlink():
+        return False
+    if p.is_dir():
+        # App bundles, libraries and packages (Foo.app, Bar.photoslibrary) are left alone.
+        return (folders and not re.fullmatch(r"\.[A-Za-z][A-Za-z0-9]*", p.suffix)
+                and p.name not in KEEP_FOLDER_NAMES)
+    return p.is_file()
+
+
+def tree_stat(p: Path) -> tuple:
+    """Size and newest change time of a file, or of everything inside a folder."""
+    st = p.stat()
+    if not p.is_dir():
+        return st.st_size, st.st_mtime
+    count, total, newest = 0, 0, st.st_mtime
+    for dirpath, dirnames, filenames in os.walk(p):
+        for name in filenames + dirnames:
+            try:
+                s2 = os.lstat(os.path.join(dirpath, name))
+            except OSError:
+                continue
+            count += 1
+            total += s2.st_size
+            newest = max(newest, s2.st_mtime)
+        if count > 5000:
+            break
+    return (count, total), newest
 
 
 def inode_key(p: Path) -> str:
@@ -541,15 +612,26 @@ def watch(cfg: dict, client: anthropic.Anthropic) -> None:
 
     def ensure_baseline(folder: str) -> bool:
         """Record files already present so they are never renamed. False if not readable yet."""
-        if load_state().get(folder, {}).get("initialized"):
+        fstate = load_state().get(folder, {})
+        if fstate.get("initialized") and (fstate.get("folders_initialized") or not cfg["rename_folders"]):
             return True
-        keys = [inode_key(p) for p in Path(folder).iterdir() if is_candidate(p)]
+        if fstate.get("initialized"):
+            keys = [inode_key(p) for p in Path(folder).iterdir() if p.is_dir() and is_candidate(p, True)]
+            with state_txn() as st:
+                fs = st.setdefault(folder, {"seen": []})
+                if cfg["only_new_files"]:
+                    fs["seen"] = list(set(fs["seen"]) | set(keys))
+                    log.info("Baseline %s: %d existing folders ignored", folder, len(keys))
+                fs["folders_initialized"] = True
+            return True
+        keys = [inode_key(p) for p in Path(folder).iterdir() if is_candidate(p, cfg["rename_folders"])]
         with state_txn() as st:
             fstate = st.setdefault(folder, {"seen": []})
             if cfg["only_new_files"]:
                 fstate["seen"] = list(set(fstate["seen"]) | set(keys))
                 log.info("Baseline %s: %d existing files ignored", folder, len(keys))
             fstate["initialized"] = True
+            fstate["folders_initialized"] = True
         return True
 
     log.info("Watching: %s (model %s)", ", ".join(cfg["watch_folders"]), cfg["model"])
@@ -574,15 +656,15 @@ def watch(cfg: dict, client: anthropic.Anthropic) -> None:
             seen = set(load_state().get(folder, {}).get("seen", []))
             for p in entries:
                 try:
-                    if not is_candidate(p):
+                    if not is_candidate(p, cfg["rename_folders"]):
                         continue
                     key = inode_key(p)
                     if key in seen:
                         continue
-                    st = p.stat()
-                    # Wait until the file has stopped changing.
-                    if time.time() - st.st_mtime < cfg["settle_seconds"] or sizes.get(key) != st.st_size:
-                        sizes[key] = st.st_size
+                    # Wait until the file (or everything in the folder) has stopped changing.
+                    size, mtime = tree_stat(p)
+                    if time.time() - mtime < cfg["settle_seconds"] or sizes.get(key) != size:
+                        sizes[key] = size
                         continue
                     sizes.pop(key, None)
                     try:
@@ -626,7 +708,7 @@ def rename_existing(cfg: dict, client: anthropic.Anthropic, dry_run: bool, limit
             continue
         done = set(state.get(folder, {}).get("renamed_existing", []))
         for p in sorted(root.iterdir(), key=lambda x: x.name.lower()):
-            if is_candidate(p) and inode_key(p) not in done:
+            if is_candidate(p, cfg["rename_folders"]) and inode_key(p) not in done:
                 files.append((folder, p))
     if limit:
         files = files[:limit]

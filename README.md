@@ -21,6 +21,8 @@ A background service that watches the folders you choose and, when a new file ap
 | Pages, Numbers, Keynote, DMG | Spotlight metadata, where available |
 | Videos, audio, large files, password-protected PDFs, anything else | File details (kind, length, download source, dates) plus a Quick Look preview frame |
 
+Folders are renamed too, from the list of files inside them and any readme or notes. App bundles and folders that apps save into (`Chrome`, `Telegram Lite`, …; see `keep_folder_names`) are left alone. A new folder is only renamed once nothing inside it has changed for a few seconds.
+
 A file whose extension is wrong or missing but that is really a PDF or image is read as one and gets the right extension.
 
 ## Install
@@ -57,6 +59,8 @@ Edit `~/Library/Application Support/AIFileRenamer/config.json`, then restart the
 | `max_name_chars` | `60` | Hard cap on name length |
 | `max_pdf_pages` | `3` | PDF pages sent to Claude |
 | `workers` | `4` | Files processed in parallel by `--existing` |
+| `rename_folders` | `true` | Rename folders as well as files |
+| `keep_folder_names` | `Chrome`, `Telegram Lite`, … | Folder names never to rename |
 | `only_new_files` | `true` | Leave files that existed before install alone |
 | `dry_run` | `false` | Log the suggested names without renaming |
 | `poll_interval_seconds` | `5` | How often to check the folders |
