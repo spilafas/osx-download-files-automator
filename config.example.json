@@ -25,5 +25,5 @@
     "Slack",
     "Safari"
   ],
-  "naming_instructions": "Format: an optional date, then a short title in Title Case with spaces. Start with the date as YYYY-MM when the content shows one that matters: the invoice or statement date, contract date, meeting date or report period. Use the date from the content, never today's date or a guess; if there is no such date, leave it out. The title is concise, 2 to 5 words: the main subject plus the key company, person or document type. Never use filler words such as document, file, final, copy, version, scan or untitled. Examples: 2026-10 Acme Invoice, 2026-07 Wadi Al Safa Tenancy Contract, Raitio Technical Proposal."
+  "naming_instructions": "Format: a date, then a short title in Title Case with spaces. Start with the full date as YYYY-MM-DD when the content shows one that matters: the invoice or statement date, contract date, meeting date or report date. For a period, such as a statement, use its end date. Use the date from the content, never today's date or a guess; if there is no such date, leave it out. The title is concise, 2 to 5 words: the main subject plus the key company, person or document type. Never use filler words such as document, file, final, copy, version, scan or untitled. Examples: 2026-10-15 Acme Invoice, 2026-07-01 Wadi Al Safa Tenancy Contract, Raitio Technical Proposal."
 }

@@ -1,6 +1,6 @@
 # AI File Renamer for macOS
 
-A background service that watches the folders you choose and, when a new file appears there, reads its content with the Claude API and renames it automatically. Names start with the date from the content and a short Title Case title: for example, `scan0012.pdf` becomes `2026-10 Acme Invoice.pdf`. When the content shows no date, the name starts with the month the file was downloaded instead, so every name starts with a date. Identical copies are marked `(duplicate)`.
+A background service that watches the folders you choose and, when a new file appears there, reads its content with the Claude API and renames it automatically. Names start with the date from the content and a short Title Case title: for example, `scan0012.pdf` becomes `2026-10-15 Acme Invoice.pdf`. When the content shows no date, the name starts with the date the file was downloaded instead, so every name starts with a date. Identical copies are marked `(duplicate)`.
 
 ## How it works
 
@@ -55,7 +55,7 @@ Edit `~/Library/Application Support/AIFileRenamer/config.json`, then restart the
 | `watch_folders` | `["~/Downloads"]` | Folders to watch (top level only) |
 | `model` | `claude-opus-5-5` | Claude model |
 | `effort` | `low` | `low` / `medium` / `high`: higher is slower and costs more |
-| `naming_instructions` | date first (YYYY-MM), 2 to 5 word Title Case title | How names should look. Write your own style here |
+| `naming_instructions` | date first (YYYY-MM-DD), 2 to 5 word Title Case title | How names should look. Write your own style here |
 | `max_name_chars` | `60` | Hard cap on name length |
 | `max_pdf_pages` | `3` | PDF pages sent to Claude |
 | `workers` | `4` | Files processed in parallel by `--existing` |
@@ -88,6 +88,7 @@ cd "$HOME/Library/Application Support/AIFileRenamer"
 venv/bin/python ai_renamer.py --existing --dry-run --limit 20   # preview 20 names
 venv/bin/python ai_renamer.py --existing                         # rename them all
 venv/bin/python ai_renamer.py --add-dates                        # date names that have none (no API calls)
+venv/bin/python ai_renamer.py --add-days                         # turn YYYY-MM names into YYYY-MM-DD
 venv/bin/python ai_renamer.py --undo                             # put the old names back
 ```
 
